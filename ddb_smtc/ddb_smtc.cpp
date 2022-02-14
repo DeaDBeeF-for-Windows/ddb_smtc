@@ -25,8 +25,6 @@
 #include "ddb_smtc.h"
 #include "include/deadbeef/deadbeef.h"
 #include "include/deadbeef/artwork.h"
-#undef __ARTWORK_H
-#include "include/deadbeef/artwork-legacy.h"
 #include "PP-UVC.h"
 
 #ifdef __cplusplus
@@ -42,12 +40,12 @@ static PP::UVC::API *ppuvc;
 char smtc_enabled = 0;
 int playback_resume = 0;
 int playback_resume_status = 0;
-ddb_artwork_plugin_t *artwork_new = nullptr;
-DB_artwork_plugin_t *artwork_legacy = nullptr;
+ddb_artwork_plugin_t *artwork = nullptr;
 
 
 #define MAX_LEN 256
-#define trace(...) { deadbeef->log_detailed (&plugin.plugin, 0, __VA_ARGS__); }
+//#define trace(...) { deadbeef->log_detailed (&plugin.plugin, 0, __VA_ARGS__); }
+#define trace(...) { deadbeef->log ( __VA_ARGS__); }
 #define trace_err(...) { deadbeef->log ( __VA_ARGS__); }
 
 int
@@ -65,24 +63,24 @@ win_charset_conv(const void *in, int inlen, void *out, int outlen, const char *c
 	return ret;
 }
 
-static char * nowplaying_format_string(char * script) {
+static char *nowplaying_format_string(const char *script) {
 	DB_playItem_t * nowplaying = deadbeef->streamer_get_playing_track();
 	if (!nowplaying) {
-		return 0;
+		return nullptr;
 	}
-	ddb_playlist_t * nowplaying_plt = deadbeef->plt_get_curr();
+
+	ddb_playlist_t *nowplaying_plt = deadbeef->plt_get_curr();
 	char * code_script = deadbeef->tf_compile(script);
 	ddb_tf_context_t context;
-	context._size = sizeof(ddb_tf_context_t);
-	context.flags = 0;
-	context.it = nowplaying;
-	context.plt = nowplaying_plt;
-	context.idx = 0;
-	context.id = 0;
-	context.iter = PL_MAIN;
-	context.update = 0;
-	context.dimmed = 0;
-	char * out = static_cast<char *>(malloc(MAX_LEN));
+	{
+		memset(&context, 0, sizeof(ddb_tf_context_t));
+		context._size = sizeof(ddb_tf_context_t);
+		context.it = nowplaying;
+		context.plt = nowplaying_plt;
+		context.iter = PL_MAIN;
+	}
+
+	char *out = static_cast<char *>(malloc(MAX_LEN));
 	if (out && code_script) {
 		deadbeef->tf_eval(&context, code_script, out, MAX_LEN);
 		trace("nowplaying_format_string: \"%s\"\n", out);
@@ -95,97 +93,62 @@ static char * nowplaying_format_string(char * script) {
 	return out;
 }
 
-void *cover_data = nullptr;
-int cover_size = 0;
-
 void cover_callback(int error, ddb_cover_query_t *query, ddb_cover_info_t *cover) {
 	trace ("cover_callback: error %d, cover %x\n", error, cover);
-	if (!error) {
+	if (cover) {
 		trace ("cover_callback: cover found: %d\n", cover->cover_found);
-		if (cover) {
-			if (cover->image_filename) {
-				// convert backslashes
-				{
-					char *s = cover->image_filename;
-					while (s = strchr(s, '/')) {
-						*s = '\\';
-					}
-				}
-				FILE *fp;
-				fopen_s(&fp, cover->image_filename, "rb");
-				if (fp) {
-					if (cover_data) {
-						// could lead to double free corruption...
-						// should be freed in updateSMTC_title();
-						Sleep(100);
-						//free(cover_data);
-					}
-					fseek(fp, 0L, SEEK_END);
-					cover_size = ftell(fp);
-					rewind(fp);
-					cover_data = malloc(cover_size);
-					fread(cover_data, 1, cover_size, fp);
-					fclose(fp);
-
-					// call update_SMTC_title()
-					typedef void(*func)(void);
-					reinterpret_cast<func>(query->user_data)();
-				}
-				else {
-					trace ("couldn't open artwork file\n");
+		trace ("cover_callback: image_filename: %s\n", cover->image_filename);
+	}
+	wchar_t wcover[MAX_LEN]; *wcover = 0;
+	if (!error) {
+		if (cover->image_filename) {
+			// convert backslashes
+			{
+				char *s = cover->image_filename;
+				while (s = strchr(s, '/')) {
+					*s = '\\';
 				}
 			}
-		}
-	}
-	if (query) {
-		if (query->track) {
-			deadbeef->pl_item_unref(query->track);
-		}
-		free(query);
-	}
-	if (cover) {
-		artwork_new->cover_info_release(cover);
-	}
-}
-
-void cover_callback_legacy(const char *fname, const char *artist, const char *album, void *user_data) {
-	trace ("cover_callback_legacy\n");
-	if (!fname) {
-		trace ("cover_callback_legacy: cover not found\n");
-		return;
-	}
-	char *fname_conv = static_cast<char *>(malloc(strlen(fname) + 1));
-	strcpy_s(fname_conv, strlen(fname)+1, fname);
-	{
-		char *s = fname_conv;
-		while (s = strchr(s, '/')) {
-			*s = '\\';
-		}
-	}
-	FILE *fp;
-	fopen_s(&fp, fname_conv, "rb");
-	if (fp) {
-		if (cover_data) {
-			// could lead to double free corruption...
-			// should be freed in updateSMTC_title();
-			Sleep(100);
-			//free(cover_data);
-		}
-		fseek(fp, 0L, SEEK_END);
-		cover_size = ftell(fp);
-		rewind(fp);
-		cover_data = malloc(cover_size);
-		fread(cover_data, 1, cover_size, fp);
-		fclose(fp);
-
-		// call update_SMTC_title()
-		typedef void(*func)(void);
-		if (user_data) {
-			reinterpret_cast<func>(user_data)();
+			// convert to wchar_t
+			win_charset_conv(cover->image_filename, strlen(cover->image_filename)+1, wcover, MAX_LEN, "UTF-8","WCHAR_T");
 		}
 	}
 	else {
-		trace("couldn't open artwork file\n");
+		// default cover
+		char cover_default[MAX_LEN];
+		artwork->default_image_path (cover_default, MAX_LEN);
+		if (*cover_default) {
+			win_charset_conv(cover_default, strlen(cover_default)+1, wcover, MAX_LEN, "UTF-8","WCHAR_T");
+		}
+	}
+	if (*wcover) {
+		FILE *fp;
+		_wfopen_s(&fp, wcover, L"rb");
+		if (fp) {
+			fseek(fp, 0L, SEEK_END);
+			size_t cover_size = ftell(fp);
+			rewind(fp);
+			void *cover_data = malloc(cover_size);
+			fread(cover_data, 1, cover_size, fp);
+			fclose(fp);
+
+			// call update_SMTC_title()
+			typedef void(*func)(void *, size_t);
+			reinterpret_cast<func>(query->user_data)(cover_data,cover_size);
+			free(cover_data);
+		}
+		else {
+			trace_err ("ddb_smtc: couldn't open artwork file\n");
+		}
+	}
+	else {
+		typedef void(*func)(void *, size_t);
+		reinterpret_cast<func>(query->user_data)(nullptr, 0);
+	}
+
+	free(query);
+	if (cover) {
+		artwork->cover_info_release(cover);
 	}
 }
 
@@ -214,7 +177,7 @@ class DeadbeefCallbacks : public PP::UVC::UserEventCallback {
 
 };
 
-static void updateSMTC_title() {
+static void updateSMTC_title(void *cover_data, size_t cover_size) {
 	trace ("updateSMTC_title\n");
 
 	char script[MAX_LEN];
@@ -251,42 +214,8 @@ static void updateSMTC_title() {
 		ti.imgBytes = cover_size;
 	}
 	else {
-		if (artwork_new) {
-			ti.imgData = nullptr;
-			ti.imgBytes = 0;
-			ddb_cover_query_t *query = static_cast<ddb_cover_query_t *>(malloc(sizeof(ddb_cover_query_t)));
-			query->_size = sizeof(ddb_cover_query_t);
-			query->track = deadbeef->streamer_get_streaming_track();
-			query->user_data = updateSMTC_title;
-			query->flags = 0;
-			query->type = nullptr;
-			artwork_new->cover_get(query, cover_callback);
-		}
-		else if (artwork_legacy) {
-			DB_playItem_t *it = deadbeef->streamer_get_streaming_track();
-			if (it) {
-				char fname[FILENAME_MAX];
-				deadbeef->pl_lock();
-				strcpy_s(fname, FILENAME_MAX, deadbeef->pl_find_meta(it, ":URI"));
-				deadbeef->pl_unlock();
-				char * ret = artwork_legacy->get_album_art(fname, artist_text, album_text, -1, cover_callback_legacy, updateSMTC_title);
-				if (ret) {
-					// call callback just to read file into cover_data, ergo don't pass updateSMTC_title
-					cover_callback_legacy(ret, artist_text, album_text, nullptr);
-					ti.imgData = cover_data;
-					ti.imgBytes = cover_size;
-				}
-				else {
-					ti.imgData = nullptr;
-					ti.imgBytes = 0;
-				}
-				deadbeef->pl_item_unref(it);
-			}
-		}
-		else {
-			ti.imgData = nullptr;
-			ti.imgBytes = 0;
-		}
+		ti.imgData = nullptr;
+		ti.imgBytes = 0;
 	}
 	// TODO: set track count to number of tracks in playlist?
 	ti.trackCount = 0;
@@ -295,20 +224,27 @@ static void updateSMTC_title() {
 	ppuvc->NewTrack(ti);
 	ppuvc->Paused(0);
 
-	if (title_text)
-		free(title_text);
-	if (artist_text)
-		free(artist_text);
-	if (album_text)
-		free(album_text);
-
-	// free only if cover_data was used in this update, else it should be freed on next update
-	if (cover_data && ti.imgData == cover_data) {
-		free(cover_data);
-		cover_data = nullptr;
-	}
-
+	free(title_text);
+	free(artist_text);
+	free(album_text);
 }
+
+static void artworkQuery(DB_playItem_t *it) {
+	if (artwork) {
+		ddb_cover_query_t *query = static_cast<ddb_cover_query_t *>(malloc(sizeof(ddb_cover_query_t)));
+		if (query) {
+			memset(query, 0, sizeof(ddb_cover_query_t));
+			query->_size = sizeof(ddb_cover_query_t);
+			query->track = it;
+			query->user_data = updateSMTC_title;
+			artwork->cover_get(query, cover_callback);
+		}
+	}
+	else {
+		updateSMTC_title(nullptr, 0);
+	}
+}
+
 
 int ddb_smtc_start() {
 	ppuvc = PP_UVC_Init(new DeadbeefCallbacks);
@@ -341,9 +277,8 @@ int ddb_smtc_stop() {
 }
 
 int ddb_smtc_connect() {
-	artwork_new = reinterpret_cast<ddb_artwork_plugin_t *>(deadbeef->plug_get_for_id("artwork2"));
-	artwork_legacy = reinterpret_cast<DB_artwork_plugin_t *>(deadbeef->plug_get_for_id("artwork"));
-	if (!artwork_new || !artwork_legacy) {
+	artwork = reinterpret_cast<ddb_artwork_plugin_t *>(deadbeef->plug_get_for_id("artwork2"));
+	if (!artwork) {
 		trace ("artwork not found, no cover support\n");
 	}
 
@@ -351,11 +286,6 @@ int ddb_smtc_connect() {
 }
 
 int ddb_smtc_disconnect() {
-	// free current cover if any
-	if (cover_data) {
-		free(cover_data);
-		cover_data = nullptr;
-	}
 	return 0;
 }
 
@@ -382,8 +312,7 @@ ddb_smtc_message(uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2) {
 		if (smtc_enabled) {
 			// do not update if track changed to NULL
 			if (((ddb_event_trackchange_t *)ctx)->to != 0) {
-				float nextitem_length = deadbeef->pl_get_item_duration(((ddb_event_trackchange_t *)ctx)->to);
-				updateSMTC_title();
+				artworkQuery(((ddb_event_trackchange_t*)ctx)->to);
 			}
 			else {
 				// todo
@@ -418,7 +347,7 @@ DDBSMTC_API DB_plugin_t * ddb_smtc_load(DB_functions_t *api) {
 	plugin.plugin.api_vmajor = 1;
 	plugin.plugin.api_vminor = 10;
 	plugin.plugin.version_major = 1;
-	plugin.plugin.version_minor = 0;
+	plugin.plugin.version_minor = 1;
 	plugin.plugin.type = DB_PLUGIN_MISC;
 	plugin.plugin.id = "ddb_smtc";
 	plugin.plugin.name = "Windows SMTC Integration";
