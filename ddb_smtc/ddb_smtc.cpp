@@ -44,8 +44,8 @@ ddb_artwork_plugin_t *artwork = nullptr;
 
 
 #define MAX_LEN 256
-//#define trace(...) { deadbeef->log_detailed (&plugin.plugin, 0, __VA_ARGS__); }
-#define trace(...) { deadbeef->log ( __VA_ARGS__); }
+#define trace(...) { deadbeef->log_detailed (&plugin.plugin, 0, __VA_ARGS__); }
+//#define trace(...) { deadbeef->log ( __VA_ARGS__); }
 #define trace_err(...) { deadbeef->log ( __VA_ARGS__); }
 
 int
