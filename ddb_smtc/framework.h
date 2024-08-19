@@ -6,7 +6,6 @@
 #include <windows.media.h>
 #include <winsdkver.h>
 #include <systemmediatransportcontrolsinterop.h>
-#include <atlcomcli.h>
 #include <atlbase.h>
 #include <Windows.Foundation.h>
 #include <wrl\wrappers\corewrappers.h>
